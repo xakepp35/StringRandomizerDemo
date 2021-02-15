@@ -27,7 +27,10 @@ func randSeq(n int) string {
 	return string(b)
 }
 
-var conn net.Conn
+var (
+	conn                 net.Conn
+	minLength, maxLength int
+)
 
 func randomizerHTTPServer(w http.ResponseWriter, r *http.Request) {
 	requestedAmountString := r.URL.Path[1:]
@@ -39,7 +42,7 @@ func randomizerHTTPServer(w http.ResponseWriter, r *http.Request) {
 
 	randomStringList := make([]string, requestedAmount)
 	for i := range randomStringList {
-		randomStringList[i] = randSeq(10 + rand.Intn(20))
+		randomStringList[i] = randSeq(minLength + rand.Intn(maxLength-minLength))
 	}
 
 	// Marshal json & send ws message
@@ -50,29 +53,49 @@ func randomizerHTTPServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// wait encoded response
+	// Wait encoded response
 	encryptorResponse, _, err := wsutil.ReadServerData(conn)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	fmt.Fprintf(w, "%s", string(encryptorResponse))
+	// Serve response, accelerate by manually making valid json
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "{\"Input\":%s,\"Output\":%s}", jsonRequestBlob, encryptorResponse)
+	//w.Write(encryptorResponse)
 }
 
 func main() {
+	var err error
+
 	rand.Seed(time.Now().UnixNano())
+
 	svcPort := os.Getenv("SERVICE_PORT")
 	if svcPort == "" {
 		svcPort = "6000"
 	}
+
 	encEndpoint := os.Getenv("ENCRYPTOR_ENDPOINT")
 	if encEndpoint == "" {
 		encEndpoint = "ws://localhost:5000/"
 	}
-	// init
-	conn1, _, _, err := ws.DefaultDialer.Dial(context.Background(), encEndpoint)
-	conn = conn1
+
+	minLengthStr := os.Getenv("STRING_LEN_MIN")
+	minLength, err = strconv.Atoi(minLengthStr)
+	if err != nil || minLength <= 0 {
+		minLength = 10
+	}
+
+	maxLengthStr := os.Getenv("STRING_LEN_MAX")
+	maxLength, err = strconv.Atoi(maxLengthStr)
+	if err != nil || maxLength < minLength {
+		maxLength = minLength + 10
+	}
+
+	// TODO: reconnect on connection loss. To reproduce: restart encryptor microservice and ws would not reconnect
+	conn, _, _, err = ws.DefaultDialer.Dial(context.Background(), encEndpoint)
 	if err != nil {
 		fmt.Printf("Cannot connect to Encryptor microservice at %s.\n", encEndpoint)
 		return
